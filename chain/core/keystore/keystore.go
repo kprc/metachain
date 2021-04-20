@@ -29,6 +29,14 @@ var New = func(savePath string) *KeyStore {
 	}
 }
 
+func (ks *KeyStore)SetAccount(act *account.Account)  {
+	ks.account = act
+}
+
+func (ks *KeyStore)GetAccount() *account.Account  {
+	return ks.account
+}
+
 func (ks *KeyStore)Load() error  {
 	if _,err:=os.Stat(ks.savePath);err!=nil{
 		return err
