@@ -19,6 +19,7 @@ const(
 
 type MetaAddr [MetaAddrLen]byte
 
+
 func (ma *MetaAddr)Encode() string  {
 	return base58.Encode(ma[:])
 }
@@ -49,6 +50,25 @@ func Decode(sma string) (MetaAddr,error)  {
 
 	return ma,nil
 }
+
+func (ma MetaAddr)MarshalText() ([]byte,error)  {
+	if s, err:= Encode(ma);err!=nil{
+		return nil, err
+	}else{
+		return []byte(s),nil
+	}
+}
+
+func (ma *MetaAddr)UnmarshalText(text []byte) error  {
+	if ma1,err:=Decode(string(text));err!=nil{
+		return err
+	}else{
+		*ma = ma1
+	}
+
+	return nil
+}
+
 
 func cshash(data []byte) ([CheckSumLen]byte,error) {
 	h:=sha3.New256()

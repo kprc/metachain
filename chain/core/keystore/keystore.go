@@ -1,6 +1,7 @@
 package keystore
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"github.com/kprc/metachain/chain/core/account"
@@ -10,8 +11,31 @@ import (
 	"os"
 )
 
+type KeyProtectSalt [16]byte
+
+func (kp KeyProtectSalt)MarshalText() ([]byte, error)  {
+	b64:=base64.StdEncoding.EncodeToString(kp[:])
+
+	return []byte(b64),nil
+}
+
+func (kp *KeyProtectSalt)UnmarshalText(text []byte)  error  {
+	b,err:=base64.StdEncoding.DecodeString(string(text))
+	if err!=nil{
+		return err
+	}
+
+	kps:=KeyProtectSalt{}
+
+	copy(kps[:],b)
+
+	*kp = kps
+
+	return nil
+}
+
 type AccountJson struct {
-	Salt [16]byte `json:"salt"`
+	Salt KeyProtectSalt `json:"salt"`
 	Addr account.MetaAddr  `json:"addr"`
 	CipherText []byte `json:"cipher_text"`
 	Version int32     `json:"version"`
@@ -142,10 +166,6 @@ func (ks *KeyStore)SaveByNewPassword(passwd string) error  {
 
 	if ks.savePath == ""{
 		return errors.New("no save path")
-	}
-
-	if ks.acctJson == nil{
-		return errors.New("key store have not loaded")
 	}
 
 	if ks.account == nil{
