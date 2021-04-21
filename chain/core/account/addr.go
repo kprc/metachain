@@ -51,6 +51,7 @@ func Decode(sma string) (MetaAddr,error)  {
 	return ma,nil
 }
 
+//FOR JSON MARSHAL
 func (ma MetaAddr)MarshalText() ([]byte,error)  {
 	if s, err:= Encode(ma);err!=nil{
 		return nil, err
@@ -58,7 +59,7 @@ func (ma MetaAddr)MarshalText() ([]byte,error)  {
 		return []byte(s),nil
 	}
 }
-
+//FOR JSON UNMARSHAL
 func (ma *MetaAddr)UnmarshalText(text []byte) error  {
 	if ma1,err:=Decode(string(text));err!=nil{
 		return err
