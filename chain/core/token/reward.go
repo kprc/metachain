@@ -4,7 +4,7 @@ import "math/big"
 
 const(
 	//3 seconds one block
-	BlockHeightPerRound uint = 10512000  //365*24*60*(60/3)
+	BlockHeightPerRound uint = 2*10512000  //365*24*60*(60/3)  two years
 	FirstRoundReward uint = 100
 )
 
@@ -15,7 +15,7 @@ func Reward(blkHeight uint64) *big.Int  {
 	r.SetUint64(uint64(FirstRoundReward))
 
 	u:=&big.Int{}
-	u.SetUint64(1e18)
+	u.SetInt64(1*M)
 
 	r = r.Mul(r,u)
 

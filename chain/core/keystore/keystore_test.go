@@ -6,7 +6,6 @@ import (
 )
 
 
-
 func TestNewKeyStore(t *testing.T)  {
 	ks:=New("./key.json")
 
