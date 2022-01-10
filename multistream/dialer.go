@@ -4,20 +4,36 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"fmt"
+	"math"
 	"net"
 	"sync"
 )
 
-type MSDialer struct {
-	Name string
-	Conn []*net.Conn
-	MaxCount int
-	RemoteAddr string
-	connCount int
-	connMap map[int]int
+type RcvData struct {
+	Data []byte
+	ErrId uint8
 }
 
+type MSConn struct {
+	net.Conn
+	wlock sync.Mutex
+	vConnCount int
+	rcvs map[uint32]*chan *RcvData
+	rcvLock sync.RWMutex
+	buflen int
+}
 
+type MSDialer struct {
+	lock sync.RWMutex
+	Name string
+	ConnSlot map[int]*MSConn
+	MaxCount int
+	RemoteAddr string
+	msConnCount int
+	connCount uint32
+	bufLen int
+}
 
 type MHash [32]byte
 
@@ -50,7 +66,40 @@ func hashbyte(data []byte) MHash {
 	return MHash(sha256.Sum256(data))
 }
 
-func NewDialer(dialerName string, count int, remoteAddr string) (MultiStreamDialer,error) {
+func (msc *MSConn)read()  {
+	for{
+		buf:=make([]byte,msc.buflen)
+
+		if n,err:=msc.Conn.Read(buf);err!=nil || n < 4{
+			msc.rcvLock.RLock()
+			for _,c:=range msc.rcvs{
+				*c <- &RcvData{
+					Data: nil,
+					ErrId: OtherError,
+				}
+				//close(*c)
+			}
+
+			msc.rcvLock.RUnlock()
+			return
+		}else{
+			c:=Buf2Code(buf)
+			connid,errid:=c.Decode()
+			msc.rcvLock.RLock()
+			if c,ok:=msc.rcvs[connid];!ok{
+				msc.rcvLock.RUnlock()
+			}else{
+				*c <- &RcvData{
+					Data: buf[4:n],
+					ErrId: errid,
+				}
+				msc.rcvLock.RUnlock()
+			}
+		}
+	}
+}
+
+func NewDialer(dialerName string, count int, remoteAddr string, bufLen int) (MultiStreamDialer,error) {
 	data:=dialString(dialerName,count)
 	hash:=hashbyte(data)
 
@@ -72,17 +121,105 @@ func NewDialer(dialerName string, count int, remoteAddr string) (MultiStreamDial
 		Name: dialerName,
 		MaxCount: count,
 		RemoteAddr: remoteAddr,
-		connMap: make(map[int]int),
+		ConnSlot: make(map[int]*MSConn),
+		bufLen: bufLen,
 	}
 
 	return msDialerStore.msd[hash],nil
-
 }
 
+func findMinSlot(connMap map[int]*MSConn, maxCount int) (int,bool) {
+	max:= math.MinInt32
+	slot := 0
+	flag:=false
 
-func (msd *MSDialer)Dial() MultiConn  {
-	if len(msd.Conn) < msd.MaxCount{
-		
+	for i:=0;i<maxCount;i++{
+		if v,ok:=connMap[i];!ok{
+			slot = i
+			flag = true
+			break
+		}else{
+			if v.vConnCount < max{
+				max = v.vConnCount
+				slot = i
+			}
+		}
 	}
+	return slot,flag
 }
 
+func (msd *MSDialer)Dial() (MultiConn,error)  {
+	msd.lock.Lock()
+	defer msd.lock.Unlock()
+
+	minSlot,newConnFlag := findMinSlot(msd.ConnSlot,msd.MaxCount)
+	if newConnFlag{
+		if conn,err:=net.Dial("tcp",msd.RemoteAddr);err!=nil{
+			return nil,err
+		}else{
+			msd.ConnSlot[minSlot] = &MSConn{
+				Conn:conn,
+				rcvs:make(map[uint32]*chan *RcvData),
+			}
+		}
+	}
+
+	msc := msd.ConnSlot[minSlot]
+
+	msd.ConnSlot[minSlot].vConnCount ++
+	msd.connCount ++
+
+	rcv:=make(chan *RcvData,1024)
+	msc.rcvLock.Lock()
+	msc.rcvs[msd.connCount] = &rcv
+	msc.rcvLock.Unlock()
+
+	if msc.vConnCount == 1{
+		go msc.read()
+	}
+
+	conn:=&MultiConnection{
+		msd: msd,
+		slot: minSlot,
+		connId: msd.connCount,
+		rcv: &rcv,
+	}
+
+
+
+	return conn,nil
+}
+
+
+
+func (msd *MSDialer)close(conn MultiConn,slot int, connid uint32) error {
+	msd.lock.Lock()
+	defer msd.lock.Unlock()
+
+	if v,ok:=msd.ConnSlot[slot];!ok{
+		return errors.New("no connection in slot")
+	}else{
+		if v.vConnCount <= 0{
+			panic("connection module error")
+		}
+		if v.vConnCount == 1{
+			v.rcvLock.Lock()
+			c:=v.rcvs[connid]
+			delete(v.rcvs, connid)
+			close(*c)
+			v.rcvLock.Unlock()
+			if err:=v.Close();err!=nil{
+				fmt.Println("close connection error",err)
+			}
+			delete(msd.ConnSlot,slot)
+		}else{
+			v.vConnCount --
+			v.rcvLock.Lock()
+			c:=v.rcvs[connid]
+			delete(v.rcvs, connid)
+			close(*c)
+			v.rcvLock.Unlock()
+		}
+	}
+	return nil
+}

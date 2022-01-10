@@ -10,10 +10,11 @@ type MultiConn interface {
 	io.Reader
 	io.Writer
 	io.Closer
+	ConnectTo() (err error)
 }
 
 type MultiStreamDialer interface {
-	Dial() MultiConn
+	Dial() (MultiConn,error)
 }
 
 
