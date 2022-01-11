@@ -30,10 +30,15 @@ func (conn *MultiConnection)Read(buf []byte) (n int,err error) {
 	case data :=<-*conn.rcv:
 		switch data.ErrId {
 		case ConnectionSuccess:
-			n:=copy(buf,data.Data)
-			return n,nil
+			n,err:= conn.msd.ConnSlot[conn.slot].Read(buf[:data.Length])
+			conn.msd.ConnSlot[conn.slot].syncTunnel <- struct{}{}
+			return n,err
 		case ConnectionEof:
-			n:=copy(buf,data.Data)
+			n,err:=conn.msd.ConnSlot[conn.slot].Read(buf[:data.Length])
+			conn.msd.ConnSlot[conn.slot].syncTunnel <- struct{}{}
+			if err!=nil{
+				return n,err
+			}
 			return n,io.EOF
 		case OtherError:
 			return 0,errors.New("connection fatal error")
@@ -55,11 +60,3 @@ func (conn *MultiConnection)Write(data []byte) (n int, err error) {
 	}
 }
 
-func (conn *MultiConnection)ConnectTo() (err error)  {
-	_,err = conn.Write(SyncCode(conn.connId).Binary())
-	if err!=nil{
-		return err
-	}
-
-	return nil
-}

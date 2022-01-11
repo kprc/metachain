@@ -9,17 +9,17 @@ const(
 	ConnectionSuccess uint8 = iota
 	ConnectionEof
 	OtherError
-
+	ConnectionClose
 	ConnSync uint8 = 255
 
 )
 
-type Code uint32
+type Code uint64
 
 func (c *Code)Binary() []byte  {
-	buf := make([]byte, 4)
+	buf := make([]byte, 8)
 
-	binary.BigEndian.PutUint32(buf,uint32(*c))
+	binary.BigEndian.PutUint64(buf,uint64(*c))
 
 	return buf
 }
@@ -29,29 +29,48 @@ func SyncCode(connId uint32) *Code {
 
 	cc:=&c
 
-	cc.Encode(connId,ConnSync)
+	cc.Encode(connId,ConnSync,0)
 
 	return cc
 }
 
-func (c *Code)Decode() (uint32, uint8)  {
-	id:=uint32(*c)
+func SyncCloseCode(connId uint32) *Code {
+	var c Code
 
-	errId := id >> 24
+	cc:=&c
 
-	connId := 0x00FFFFFF & id
+	cc.Encode(connId,ConnectionClose,0)
 
-	return connId,uint8(errId)
+	return cc
 }
 
-func (c *Code)Encode(connId uint32, errId uint8)  {
+
+func (c *Code)Decode() (uint32, uint8,uint32)  {
+	id:=uint64(*c)
+
+	l:=id & 0x00000000FFFFFFFF
+
+	errId := (id>>32) >> 24
+
+	connId := 0x00FFFFFF & uint32(id>>32)
+
+	return connId,uint8(errId),uint32(l)
+}
+
+func (c *Code)Encode(connId uint32, errId uint8, datalen uint32)  {
 	id := connId | (uint32(errId) << 24)
 
-	*c = Code(id)
+	t:=uint64(id)
+
+	t = t << 32
+
+	t = t|uint64(datalen)
+
+	*c = Code(t)
 }
 
 func Buf2Code(buf []byte) *Code {
-	id:=binary.BigEndian.Uint32(buf)
+	id:=binary.BigEndian.Uint64(buf)
 	c:=Code(id)
 	return &c
 }

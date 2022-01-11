@@ -11,7 +11,7 @@ import (
 )
 
 type RcvData struct {
-	Data []byte
+	Length uint32
 	ErrId uint8
 }
 
@@ -19,9 +19,9 @@ type MSConn struct {
 	net.Conn
 	wlock sync.Mutex
 	vConnCount int
+	syncTunnel chan struct{}
 	rcvs map[uint32]*chan *RcvData
 	rcvLock sync.RWMutex
-	buflen int
 }
 
 type MSDialer struct {
@@ -68,30 +68,31 @@ func hashbyte(data []byte) MHash {
 
 func (msc *MSConn)read()  {
 	for{
-		buf:=make([]byte,msc.buflen)
+		buf:=make([]byte,8)
 
 		if n,err:=msc.Conn.Read(buf);err!=nil || n < 4{
 			msc.rcvLock.RLock()
 			for _,c:=range msc.rcvs{
 				*c <- &RcvData{
-					Data: nil,
 					ErrId: OtherError,
 				}
-				//close(*c)
 			}
-
 			msc.rcvLock.RUnlock()
 			return
 		}else{
 			c:=Buf2Code(buf)
-			connid,errid:=c.Decode()
+			connid,errid,l:=c.Decode()
 			msc.rcvLock.RLock()
 			if c,ok:=msc.rcvs[connid];!ok{
 				msc.rcvLock.RUnlock()
 			}else{
+
 				*c <- &RcvData{
-					Data: buf[4:n],
+					Length: l,
 					ErrId: errid,
+				}
+				if errid == ConnectionSuccess || errid == ConnectionEof{
+					<-msc.syncTunnel
 				}
 				msc.rcvLock.RUnlock()
 			}
@@ -99,7 +100,7 @@ func (msc *MSConn)read()  {
 	}
 }
 
-func NewDialer(dialerName string, count int, remoteAddr string, bufLen int) (MultiStreamDialer,error) {
+func NewDialer(dialerName string, count int, remoteAddr string) (MultiStreamDialer,error) {
 	data:=dialString(dialerName,count)
 	hash:=hashbyte(data)
 
@@ -122,7 +123,6 @@ func NewDialer(dialerName string, count int, remoteAddr string, bufLen int) (Mul
 		MaxCount: count,
 		RemoteAddr: remoteAddr,
 		ConnSlot: make(map[int]*MSConn),
-		bufLen: bufLen,
 	}
 
 	return msDialerStore.msd[hash],nil
@@ -160,6 +160,7 @@ func (msd *MSDialer)Dial() (MultiConn,error)  {
 			msd.ConnSlot[minSlot] = &MSConn{
 				Conn:conn,
 				rcvs:make(map[uint32]*chan *RcvData),
+				syncTunnel: make(chan struct{}),
 			}
 		}
 	}
@@ -169,7 +170,7 @@ func (msd *MSDialer)Dial() (MultiConn,error)  {
 	msd.ConnSlot[minSlot].vConnCount ++
 	msd.connCount ++
 
-	rcv:=make(chan *RcvData,1024)
+	rcv:=make(chan *RcvData)
 	msc.rcvLock.Lock()
 	msc.rcvs[msd.connCount] = &rcv
 	msc.rcvLock.Unlock()
@@ -184,8 +185,6 @@ func (msd *MSDialer)Dial() (MultiConn,error)  {
 		connId: msd.connCount,
 		rcv: &rcv,
 	}
-
-
 
 	return conn,nil
 }
@@ -211,6 +210,7 @@ func (msd *MSDialer)close(conn MultiConn,slot int, connid uint32) error {
 			if err:=v.Close();err!=nil{
 				fmt.Println("close connection error",err)
 			}
+			close(v.syncTunnel)
 			delete(msd.ConnSlot,slot)
 		}else{
 			v.vConnCount --
