@@ -15,6 +15,7 @@ type MultiConn interface {
 
 type MultiStreamDialer interface {
 	Dial() (MultiConn,error)
+	Suicide()
 }
 
 

@@ -11,12 +11,11 @@ const(
 	OtherError
 	ConnectionClose
 	ConnSync uint8 = 255
-
 )
 
 type Code uint64
 
-func (c *Code)Binary() []byte  {
+func (c *Code)Bytes() []byte  {
 	buf := make([]byte, 8)
 
 	binary.BigEndian.PutUint64(buf,uint64(*c))

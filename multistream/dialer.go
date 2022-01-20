@@ -16,23 +16,23 @@ type RcvData struct {
 }
 
 type MSConn struct {
-	net.Conn
-	wlock sync.Mutex
-	vConnCount int
-	syncTunnel chan struct{}
-	rcvs map[uint32]*chan *RcvData
-	rcvLock sync.RWMutex
+	net.Conn						//real connection
+	vConnCount int					//total virtual connection number
+	syncTunnel chan struct{}		//used for read interface to sync between real connection and virtual connection
+	rcvs map[uint32]*chan *RcvData	//used for virtual connection to read buffer
+	rcvLock sync.RWMutex			//lock for rcvs
 }
 
 type MSDialer struct {
 	lock sync.RWMutex
 	Name string
 	ConnSlot map[int]*MSConn
-	MaxCount int
-	RemoteAddr string
-	msConnCount int
-	connCount uint32
-	bufLen int
+	MaxRealConn int				//max real tcp connection from configuration
+	MaxVirtualConn int			//max virtual tcp connection from configuration
+	RemoteAddr string			//miner ip address
+	//msRealConn int				//current real tcp connection
+	vIDCounter uint32			//a counter for generation a virtual connection ID, we just used 3 bytes, like uint24
+	msVirtualconn int			//current virtual tcp connection
 }
 
 type MHash [32]byte
@@ -44,7 +44,6 @@ type MSDialerStore struct {
 
 var (
 	msDialerStore *MSDialerStore
-	lock sync.Mutex
 )
 
 func init()  {
@@ -86,7 +85,6 @@ func (msc *MSConn)read()  {
 			if c,ok:=msc.rcvs[connid];!ok{
 				msc.rcvLock.RUnlock()
 			}else{
-
 				*c <- &RcvData{
 					Length: l,
 					ErrId: errid,
@@ -100,7 +98,7 @@ func (msc *MSConn)read()  {
 	}
 }
 
-func NewDialer(dialerName string, count int, remoteAddr string) (MultiStreamDialer,error) {
+func NewDialer(dialerName string, count,vcount int, remoteAddr string) (MultiStreamDialer,error) {
 	data:=dialString(dialerName,count)
 	hash:=hashbyte(data)
 
@@ -120,12 +118,24 @@ func NewDialer(dialerName string, count int, remoteAddr string) (MultiStreamDial
 
 	msDialerStore.msd[hash] = &MSDialer{
 		Name: dialerName,
-		MaxCount: count,
+		MaxRealConn: count,
+		MaxVirtualConn: vcount,
 		RemoteAddr: remoteAddr,
 		ConnSlot: make(map[int]*MSConn),
 	}
 
 	return msDialerStore.msd[hash],nil
+}
+
+func (msd *MSDialer)Suicide()  {
+	data:=dialString(msd.Name,msd.MaxRealConn)
+	hash:=hashbyte(data)
+
+	msDialerStore.rwLock.Lock()
+	defer msDialerStore.rwLock.Unlock()
+
+
+	delete(msDialerStore.msd,hash)
 }
 
 func findMinSlot(connMap map[int]*MSConn, maxCount int) (int,bool) {
@@ -152,7 +162,12 @@ func (msd *MSDialer)Dial() (MultiConn,error)  {
 	msd.lock.Lock()
 	defer msd.lock.Unlock()
 
-	minSlot,newConnFlag := findMinSlot(msd.ConnSlot,msd.MaxCount)
+	if msd.MaxVirtualConn <= msd.msVirtualconn{
+		errMsg:=fmt.Sprintf("virtual connection limited, max virtual: %d",msd.MaxVirtualConn)
+		return nil,errors.New(errMsg)
+	}
+
+	minSlot,newConnFlag := findMinSlot(msd.ConnSlot,msd.MaxRealConn)
 	if newConnFlag{
 		if conn,err:=net.Dial("tcp",msd.RemoteAddr);err!=nil{
 			return nil,err
@@ -162,17 +177,19 @@ func (msd *MSDialer)Dial() (MultiConn,error)  {
 				rcvs:make(map[uint32]*chan *RcvData),
 				syncTunnel: make(chan struct{}),
 			}
+			//msd.msRealConn ++
 		}
 	}
 
 	msc := msd.ConnSlot[minSlot]
 
 	msd.ConnSlot[minSlot].vConnCount ++
-	msd.connCount ++
+	msd.vIDCounter ++
+	msd.msVirtualconn ++
 
 	rcv:=make(chan *RcvData)
 	msc.rcvLock.Lock()
-	msc.rcvs[msd.connCount] = &rcv
+	msc.rcvs[msd.vIDCounter] = &rcv
 	msc.rcvLock.Unlock()
 
 	if msc.vConnCount == 1{
@@ -182,7 +199,7 @@ func (msd *MSDialer)Dial() (MultiConn,error)  {
 	conn:=&MultiConnection{
 		msd: msd,
 		slot: minSlot,
-		connId: msd.connCount,
+		connId: msd.vIDCounter,
 		rcv: &rcv,
 	}
 
@@ -203,21 +220,26 @@ func (msd *MSDialer)close(conn MultiConn,slot int, connid uint32) error {
 		}
 		if v.vConnCount == 1{
 			v.rcvLock.Lock()
-			c:=v.rcvs[connid]
-			delete(v.rcvs, connid)
-			close(*c)
+			if c,ok:=v.rcvs[connid];ok{
+				delete(v.rcvs, connid)
+				close(*c)
+			}
 			v.rcvLock.Unlock()
 			if err:=v.Close();err!=nil{
 				fmt.Println("close connection error",err)
 			}
 			close(v.syncTunnel)
 			delete(msd.ConnSlot,slot)
+			//msd.msRealConn --;
+			msd.msVirtualconn --;
+
 		}else{
 			v.vConnCount --
 			v.rcvLock.Lock()
-			c:=v.rcvs[connid]
-			delete(v.rcvs, connid)
-			close(*c)
+			if c,ok:=v.rcvs[connid];ok {
+				delete(v.rcvs, connid)
+				close(*c)
+			}
 			v.rcvLock.Unlock()
 		}
 	}
